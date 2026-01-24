@@ -1,0 +1,65 @@
+{
+  "name": "project-cartographer",
+  "displayName": "Project Cartographer",
+  "description": "Agentic, graph-based static analysis for codebase understanding",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "projectCartographer.openView",
+        "title": "Open Project Cartographer"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "projectCartographerView",
+          "name": "Project Cartographer",
+          "when": "workspaceFolderCount > 0"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Project Cartographer",
+      "properties": {
+        "projectCartographer.geminiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Gemini API key for LLM explanations (optional)"
+        },
+        "projectCartographer.enableLLM": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable LLM explanations (requires Gemini API key)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./ && npm run copy-python",
+    "copy-python": "cp src/extractors/python_ast_helper.py out/extractors/python_ast_helper.py || true",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.23.0",
+    "@babel/traverse": "^7.23.0",
+    "@babel/types": "^7.23.0",
+    "@google/generative-ai": "^0.2.0"
+  }
+}
