@@ -39,7 +39,7 @@ export class HistorianAgent extends Agent {
             '--name-only',
             '--format=commit:%H|%an|%ad',
             '--date=iso',
-            '--limit=1000' // Limit to last 1000 commits for performance
+            '--max-count=1000' // Limit to last 1000 commits for performance
         ]);
 
         const historyMap = new Map<string, FileHistory>();

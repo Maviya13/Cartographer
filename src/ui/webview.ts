@@ -80,6 +80,92 @@ export function createWebviewPanel(
                         vscode.window.showErrorMessage(`Failed to open file: ${message.file}`);
                     }
                     break;
+
+                case 'getGraphData':
+                    try {
+                        // Serialize graph for D3 visualization
+                        const nodes = [];
+                        const links = [];
+
+                        // Get risk data from knowledge base if available
+                        const riskData = data?.['risk-assessor'] || [];
+                        const riskMap = new Map();
+                        riskData.forEach((r: any) => {
+                            if (r.file) riskMap.set(r.file, r.severity);
+                        });
+                        // Add file nodes
+                        const fileNodes = graph.getNodesByType('File');
+                        for (const node of fileNodes) {
+                            const filePath = node.data.path || node.id;
+                            const fileRisk = riskMap.get(filePath) || 'LOW';
+                            
+                            nodes.push({
+                                id: node.id,
+                                label: path.basename(filePath),
+                                type: 'File',
+                                risk: fileRisk,
+                                centrality: 0,
+                                filePath: filePath,
+                                isolated: false
+                            });
+                        }
+
+                        // Add function nodes
+                        const funcNodes = graph.getNodesByType('Function');
+                        for (const node of funcNodes) {
+                            const inEdges = graph.getIncomingEdges(node.id).filter(e => e.type === 'CALLS');
+                            const outEdges = graph.getOutgoingEdges(node.id).filter(e => e.type === 'CALLS');
+                            const centrality = inEdges.length + outEdges.length;
+
+                            nodes.push({
+                                id: node.id,
+                                label: node.data.name || node.id.split(':').pop() || node.id,
+                                type: 'Function',
+                                risk: node.data.risk || 'LOW',
+                                centrality,
+                                filePath: node.data.file,
+                            isolated: centrality === 0
+                        });
+                        }
+
+                        // Add edges
+                        for (const node of [...fileNodes, ...funcNodes]) {
+                            const edges = graph.getOutgoingEdges(node.id);
+                            for (const edge of edges) {
+                                if (edge.type === 'CALLS' || edge.type === 'IMPORTS') {
+                                    links.push({
+                                        source: edge.from,
+                                        target: edge.to,
+                                        type: edge.type
+                                    });
+                                }
+                            }
+                        }
+                        // Mark truly isolated nodes (no edges at all)
+                        const connectedIds = new Set();
+                        links.forEach(l => {
+                            connectedIds.add(l.source);
+                            connectedIds.add(l.target);
+                        });
+                        nodes.forEach((n: any) => {
+                            if (!connectedIds.has(n.id)) {
+                                n.isolated = true;
+                                n.risk = 'ISOLATED'; // Special risk level for isolated nodes
+                            }
+                        });
+
+                        panel.webview.postMessage({
+                            command: 'graphData',
+                            data: { nodes, links }
+                        });
+                    } catch (error) {
+                        console.error('Graph data error:', error);
+                        panel.webview.postMessage({
+                            command: 'error',
+                            error: 'Failed to load graph data'
+                        });
+                    }
+                    break;
             }
         },
         undefined,

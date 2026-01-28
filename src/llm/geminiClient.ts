@@ -193,9 +193,12 @@ ${metadata ? `Metadata:\n${JSON.stringify(metadata, null, 2)}` : ''}
 
 ${contextPreview ? `Context Preview:\n${contextPreview}` : ''}
 
-Provide a clear, concise explanation of what these results mean in the context of the question. 
-Focus on explaining the relationships and implications. Do NOT make up or infer additional structure.
-Keep it under 200 words.`;
+Provide a clear, well-structured explanation using markdown formatting:
+- Use **## headings** for main sections
+- Use **bullet points** for lists
+- Use \`code formatting\` for file/function names
+- Keep it under 200 words
+- Be concise and scannable`;
     }
 
     /**
@@ -224,9 +227,12 @@ Here are the relevant files from the project:
 
 ${codeContext}
 
-Please answer the user's question based on the code you see. Be specific, reference file names and functions when relevant. If you need more context, mention which files would be helpful to see.
-
-Keep your answer clear and concise.`;
+Please answer using well-structured markdown:
+- Use **## headings** to organize your response
+- Use **bullet points** for key findings
+- Use \`code formatting\` for file/function/class names
+- Use **numbered lists** for step-by-step explanations
+- Keep it clear, concise, and scannable`;
 
             const result = await this.genAI.models.generateContent({
                 model: 'gemini-2.5-flash',
