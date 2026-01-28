@@ -12,8 +12,10 @@ import * as path from 'path';
 export class GeminiClient {
     private genAI: GoogleGenAI | null = null;
     private enabled: boolean = false;
+    private context: vscode.ExtensionContext;
 
     constructor(context: vscode.ExtensionContext) {
+        this.context = context;
         this.initialize(context);
 
         // Listen for configuration changes
@@ -25,8 +27,9 @@ export class GeminiClient {
             })
         );
 
-        // Listen for .env file changes
-        const watcher = vscode.workspace.createFileSystemWatcher('**/.env');
+        // Listen for .env file changes in EXTENSION directory
+        const envPath = path.join(context.extensionPath, '.env');
+        const watcher = vscode.workspace.createFileSystemWatcher(envPath);
         watcher.onDidChange(() => {
             console.log('.env file changed, re-initializing Gemini client...');
             this.initialize(context);
@@ -81,19 +84,12 @@ export class GeminiClient {
 
     private getApiKeyFromEnv(): string | null {
         try {
-            // Get workspace folder
-            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-            if (!workspaceFolder) {
-                console.log('[GeminiClient] No workspace folder found');
-                return null;
-            }
-
-            // Look for .env file in workspace root
-            const envPath = path.join(workspaceFolder.uri.fsPath, '.env');
-            console.log(`[GeminiClient] Looking for .env at: ${envPath}`);
+            // Look for .env file in EXTENSION directory, not workspace
+            const envPath = path.join(this.context.extensionPath, '.env');
+            console.log(`[GeminiClient] Looking for .env in extension directory: ${envPath}`);
 
             if (!fs.existsSync(envPath)) {
-                console.log('[GeminiClient] .env file NOT found');
+                console.log('[GeminiClient] .env file NOT found in extension directory');
                 return null;
             }
 
@@ -116,7 +112,8 @@ export class GeminiClient {
                     // Remove quotes if present
                     const key = match[1].trim().replace(/^["']|["']$/g, '');
                     if (key) {
-                        console.log('[GeminiClient] Found GEMINI_API_KEY in .env file');
+                        const masked = key.substring(0, 4) + '...' + key.substring(key.length - 4);
+                        console.log(`[GeminiClient] Found GEMINI_API_KEY. Masked: ${masked} (Length: ${key.length})`);
                         return key;
                     }
                 }
@@ -159,7 +156,7 @@ export class GeminiClient {
             );
 
             const result = await this.genAI.models.generateContent({
-                model: 'gemini-3-flash-preview',
+                model: 'gemini-2.5-flash',
                 contents: prompt
             });
 
@@ -232,7 +229,7 @@ Please answer the user's question based on the code you see. Be specific, refere
 Keep your answer clear and concise.`;
 
             const result = await this.genAI.models.generateContent({
-                model: 'gemini-3-flash-preview',
+                model: 'gemini-2.5-flash',
                 contents: prompt
             });
 
