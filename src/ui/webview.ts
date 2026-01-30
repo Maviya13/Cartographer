@@ -29,6 +29,91 @@ export function createWebviewPanel(
     // Get all files for dropdown
     const allFiles = graph.getNodesByType('File').map(n => n.data.path);
 
+    // Helper to generate graph payload
+    const getGraphPayload = () => {
+        const nodes: any[] = [];
+        const links: any[] = [];
+
+        // Get risk data from knowledge base if available
+        const riskData = data?.['risk-assessor'] || [];
+        const riskMap = new Map();
+        riskData.forEach((r: any) => {
+            if (r.file) {
+                const existing = riskMap.get(r.file);
+                if (!existing || (r.severity === 'HIGH' && existing.severity !== 'HIGH')) {
+                    riskMap.set(r.file, { severity: r.severity, message: r.message, type: r.type });
+                }
+            }
+        });
+
+        // Add file nodes
+        const fileNodes = graph.getNodesByType('File');
+        for (const node of fileNodes) {
+            const filePath = node.data.path || node.id;
+            const riskInfo = riskMap.get(filePath);
+            const fileRisk = riskInfo ? riskInfo.severity : 'LOW';
+
+            nodes.push({
+                id: node.id,
+                label: path.basename(filePath),
+                type: 'File',
+                risk: fileRisk,
+                riskMessage: riskInfo ? riskInfo.message : null,
+                riskType: riskInfo ? riskInfo.type : null,
+                centrality: 0,
+                filePath: filePath,
+                isolated: false
+            });
+        }
+
+        // Add function nodes
+        const funcNodes = graph.getNodesByType('Function');
+        for (const node of funcNodes) {
+            const inEdges = graph.getIncomingEdges(node.id).filter(e => e.type === 'CALLS');
+            const outEdges = graph.getOutgoingEdges(node.id).filter(e => e.type === 'CALLS');
+            const centrality = inEdges.length + outEdges.length;
+
+            nodes.push({
+                id: node.id,
+                label: node.data.name || node.id.split(':').pop() || node.id,
+                type: 'Function',
+                risk: node.data.risk || 'LOW',
+                centrality,
+                filePath: node.data.file,
+                isolated: centrality === 0
+            });
+        }
+
+        // Add edges
+        for (const node of [...fileNodes, ...funcNodes]) {
+            const edges = graph.getOutgoingEdges(node.id);
+            for (const edge of edges) {
+                if (edge.type === 'CALLS' || edge.type === 'IMPORTS') {
+                    links.push({
+                        source: edge.from,
+                        target: edge.to,
+                        type: edge.type
+                    });
+                }
+            }
+        }
+
+        // Mark truly isolated nodes
+        const connectedIds = new Set();
+        links.forEach(l => {
+            connectedIds.add(l.source);
+            connectedIds.add(l.target);
+        });
+        nodes.forEach((n: any) => {
+            if (!connectedIds.has(n.id)) {
+                n.isolated = true;
+                n.risk = 'ISOLATED';
+            }
+        });
+
+        return { nodes, links };
+    };
+
     // Handle messages from webview
     panel.webview.onDidReceiveMessage(
         async (message) => {
@@ -40,7 +125,36 @@ export function createWebviewPanel(
                     });
                     break;
 
+                case 'saveSnapshot':
+                    try {
+                        if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+                            throw new Error('No workspace open');
+                        }
+                        const rootPath = vscode.workspace.workspaceFolders[0].uri.fsPath;
+                        const snapshotDir = path.join(rootPath, '.vscode', 'snapshots');
+
+                        // Create directory
+                        if (!fs.existsSync(snapshotDir)) {
+                            fs.mkdirSync(snapshotDir, { recursive: true });
+                        }
+
+                        // Generate payload
+                        const payload = getGraphPayload();
+                        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                        const filename = `snapshot-${timestamp}.json`;
+                        const filePath = path.join(snapshotDir, filename);
+
+                        // Write file
+                        fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+
+                        vscode.window.showInformationMessage(`Snapshot saved: ${filename}`);
+                    } catch (error) {
+                        vscode.window.showErrorMessage(`Failed to save snapshot: ${String(error)}`);
+                    }
+                    break;
+
                 case 'runQuery':
+                    // ... (existing runQuery logic) ...
                     try {
                         console.log('Query received:', message.question);
                         panel.webview.postMessage({
@@ -61,9 +175,7 @@ export function createWebviewPanel(
                             result,
                             loading: false
                         });
-                        console.log('Result message sent to webview');
                     } catch (error) {
-                        console.error('Query error:', error);
                         panel.webview.postMessage({
                             command: 'error',
                             error: error instanceof Error ? error.message : String(error),
@@ -83,80 +195,10 @@ export function createWebviewPanel(
 
                 case 'getGraphData':
                     try {
-                        // Serialize graph for D3 visualization
-                        const nodes = [];
-                        const links = [];
-
-                        // Get risk data from knowledge base if available
-                        const riskData = data?.['risk-assessor'] || [];
-                        const riskMap = new Map();
-                        riskData.forEach((r: any) => {
-                            if (r.file) riskMap.set(r.file, r.severity);
-                        });
-                        // Add file nodes
-                        const fileNodes = graph.getNodesByType('File');
-                        for (const node of fileNodes) {
-                            const filePath = node.data.path || node.id;
-                            const fileRisk = riskMap.get(filePath) || 'LOW';
-                            
-                            nodes.push({
-                                id: node.id,
-                                label: path.basename(filePath),
-                                type: 'File',
-                                risk: fileRisk,
-                                centrality: 0,
-                                filePath: filePath,
-                                isolated: false
-                            });
-                        }
-
-                        // Add function nodes
-                        const funcNodes = graph.getNodesByType('Function');
-                        for (const node of funcNodes) {
-                            const inEdges = graph.getIncomingEdges(node.id).filter(e => e.type === 'CALLS');
-                            const outEdges = graph.getOutgoingEdges(node.id).filter(e => e.type === 'CALLS');
-                            const centrality = inEdges.length + outEdges.length;
-
-                            nodes.push({
-                                id: node.id,
-                                label: node.data.name || node.id.split(':').pop() || node.id,
-                                type: 'Function',
-                                risk: node.data.risk || 'LOW',
-                                centrality,
-                                filePath: node.data.file,
-                            isolated: centrality === 0
-                        });
-                        }
-
-                        // Add edges
-                        for (const node of [...fileNodes, ...funcNodes]) {
-                            const edges = graph.getOutgoingEdges(node.id);
-                            for (const edge of edges) {
-                                if (edge.type === 'CALLS' || edge.type === 'IMPORTS') {
-                                    links.push({
-                                        source: edge.from,
-                                        target: edge.to,
-                                        type: edge.type
-                                    });
-                                }
-                            }
-                        }
-                        // Mark truly isolated nodes (no edges at all)
-                        const connectedIds = new Set();
-                        links.forEach(l => {
-                            connectedIds.add(l.source);
-                            connectedIds.add(l.target);
-                        });
-                        nodes.forEach((n: any) => {
-                            if (!connectedIds.has(n.id)) {
-                                n.isolated = true;
-                                n.risk = 'ISOLATED'; // Special risk level for isolated nodes
-                            }
-                        });
-
+                        const payload = getGraphPayload();
                         panel.webview.postMessage({
                             command: 'graphData',
-                            data: { nodes, links }
+                            data: payload
                         });
                     } catch (error) {
                         console.error('Graph data error:', error);
@@ -164,6 +206,49 @@ export function createWebviewPanel(
                             command: 'error',
                             error: 'Failed to load graph data'
                         });
+                    }
+                    break;
+                case 'listSnapshots':
+                    try {
+                        if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+                            throw new Error('No workspace open');
+                        }
+                        const rootPath = vscode.workspace.workspaceFolders[0].uri.fsPath;
+                        const snapshotDir = path.join(rootPath, '.vscode', 'snapshots');
+
+                        if (!fs.existsSync(snapshotDir)) {
+                            panel.webview.postMessage({ command: 'snapshotList', snapshots: [] });
+                            return;
+                        }
+
+                        const files = fs.readdirSync(snapshotDir).filter((f: string) => f.endsWith('.json')).sort().reverse();
+                        panel.webview.postMessage({ command: 'snapshotList', snapshots: files });
+                    } catch (error) {
+                        console.error('List snapshots error:', error);
+                        panel.webview.postMessage({ command: 'snapshotList', snapshots: [] });
+                    }
+                    break;
+
+                case 'loadSnapshot':
+                    try {
+                        if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+                            throw new Error('No workspace open');
+                        }
+                        const rootPath = vscode.workspace.workspaceFolders[0].uri.fsPath;
+                        const snapshotPath = path.join(rootPath, '.vscode', 'snapshots', message.filename);
+
+                        if (fs.existsSync(snapshotPath)) {
+                            const content = fs.readFileSync(snapshotPath, 'utf-8');
+                            panel.webview.postMessage({
+                                command: 'snapshotData',
+                                data: JSON.parse(content),
+                                filename: message.filename
+                            });
+                        } else {
+                            throw new Error('Snapshot file not found');
+                        }
+                    } catch (error) {
+                        vscode.window.showErrorMessage(`Failed to load snapshot: ${String(error)}`);
                     }
                     break;
             }

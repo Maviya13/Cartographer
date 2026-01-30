@@ -83,7 +83,9 @@ async function buildKnowledgeGraph(progress: vscode.Progress<{ message?: string;
     const coordinator = new AgentCoordinator(knowledgeBase);
 
     // Register Agents
-    coordinator.registerAgent(new ArchaeologistAgent(knowledgeBase));
+    const config = vscode.workspace.getConfiguration('projectCartographer');
+    const excludePatterns = config.get<string[]>('excludePatterns') || [];
+    coordinator.registerAgent(new ArchaeologistAgent(knowledgeBase, excludePatterns));
     coordinator.registerAgent(new DetectiveAgent(knowledgeBase));
     coordinator.registerAgent(new RiskAssessorAgent(knowledgeBase));
     coordinator.registerAgent(new HistorianAgent(knowledgeBase));

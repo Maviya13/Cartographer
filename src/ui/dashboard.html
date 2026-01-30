@@ -300,16 +300,45 @@
             /* Slightly compact */
             display: none;
             overflow-y: auto;
+            max-height: 400px;
+            /* Limit height */
             z-index: 1000;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
             /* Add shadow for floating effect */
-            pointer-events: none;
-            /* Prevent flickering when hovering over it */
+            pointer-events: auto;
+            /* Enable scrolling */
         }
 
         #graph-context h3 {
             margin: 0 0 10px 0;
             font-size: 1.1em;
+        }
+
+        .reasoning-box {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 8px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-size: 0.9em;
+            border-left: 3px solid transparent;
+        }
+
+        .risk-box {
+            border-left-color: #ff4d4d;
+            background: rgba(255, 77, 77, 0.1);
+        }
+
+        .centrality-box {
+            border-left-color: #61dafb;
+            background: rgba(97, 218, 251, 0.1);
+        }
+
+        .reasoning {
+            font-size: 0.85em;
+            margin-top: -5px;
+            margin-bottom: 10px;
+            font-style: italic;
+            opacity: 0.8;
         }
 
         .graph-controls {
@@ -422,6 +451,7 @@
         <div id="graph-view" class="tab-content" style="display: none;">
             <div class="graph-controls">
                 <button id="resetZoom">Reset Zoom</button>
+                <button id="saveSnapshot">📸 Save Snapshot</button>
                 <button id="toggleLabels">Hide Labels</button>
                 <button id="clearSelection">Clear Selection</button>
                 <select id="filterType">
@@ -431,6 +461,10 @@
                     <option value="files">Files Only</option>
                     <option value="functions">Functions Only</option>
                     <option value="high-risk">High Risk Only</option>
+                </select>
+                <div style="width: 1px; height: 20px; background: #555; margin: 0 5px;"></div>
+                <select id="snapshotSelect" style="max-width: 150px;">
+                    <option value="live">🔴 Live View</option>
                 </select>
             </div>
             <div id="graph-container">
@@ -535,17 +569,94 @@
                     case 'error':
                         setLoading(false);
                         showError(message.error);
+                    case 'snapshotList':
+                        const select = document.getElementById('snapshotSelect');
+                        // Keep "Live View"
+                        select.innerHTML = '<option value="live">🔴 Live View</option>';
+                        message.snapshots.forEach(s => {
+                            const opt = document.createElement('option');
+                            opt.value = s;
+                            // Format: snapshot-2023-10-27-10-00-00.json -> 2023-10-27 10:00:00
+                            opt.textContent = '📸 ' + s.replace('snapshot-', '').replace('.json', '').replace(/-/g, ' ');
+                            select.appendChild(opt);
+                        });
+                        break;
+
+                    case 'snapshotData':
+                        setLoading(false);
+                        // Store snapshot data globally or pass to render
+                        window.snapshotData = message.data;
+                        if (window.currentGraphData) {
+                            renderGraph(window.currentGraphData, window.snapshotData);
+                        }
+                        break;
+
+                    case 'graphData':
+                        window.currentGraphData = message.data;
+                        // If we have a snapshot loaded, re-render with diff
+                        renderGraph(message.data, window.snapshotData);
+                        break;
+
                         break;
                 }
             });
 
             // Graph Functions
+            // Graph Functions
             function initGraph() {
                 window.graphInitialized = true;
                 vscode.postMessage({ command: 'getGraphData' });
+                vscode.postMessage({ command: 'listSnapshots' });
             }
 
-            function renderGraph(data) {
+            // Global Event Listeners for Graph Controls
+            document.getElementById('resetZoom').onclick = () => {
+                const svg = d3.select('#graph-svg');
+                svg.transition().duration(750).call(d3.zoom().transform, d3.zoomIdentity);
+            };
+
+            let showLabels = true;
+            document.getElementById('toggleLabels').onclick = (e) => {
+                showLabels = !showLabels;
+                d3.selectAll('.node-label').style('opacity', showLabels ? 1 : 0);
+                e.target.textContent = showLabels ? 'Hide Labels' : 'Show Labels';
+            };
+
+            document.getElementById('saveSnapshot').onclick = () => {
+                vscode.postMessage({ command: 'saveSnapshot' });
+            };
+
+            const userSnapshotSelect = document.getElementById('snapshotSelect');
+            if (userSnapshotSelect) {
+                userSnapshotSelect.onchange = (e) => {
+                    const val = e.target.value;
+                    if (val === 'live') {
+                        window.snapshotData = null;
+                        renderGraph();
+                    } else {
+                        setLoading(true);
+                        vscode.postMessage({ command: 'loadSnapshot', filename: val });
+                    }
+                };
+            }
+
+            let currentFilter = 'all';
+            const filterSelect = document.getElementById('filterType');
+            if (filterSelect) {
+                filterSelect.onchange = (e) => {
+                    currentFilter = e.target.value;
+                    renderGraph();
+                };
+            }
+
+            // Main Render Function
+            function renderGraph(dataOverride, snapshotDataOverride) {
+                // Use globals if not provided (allows calling renderGraph() without args)
+                const data = dataOverride || window.currentGraphData;
+                const snapshotData = snapshotDataOverride || window.snapshotData;
+
+                if (!data) return;
+
                 const svg = d3.select('#graph-svg');
                 svg.selectAll('*').remove();
 
@@ -556,148 +667,176 @@
 
                 const g = svg.append('g');
 
+                // Zoom Support
                 const zoom = d3.zoom()
                     .scaleExtent([0.1, 4])
                     .on('zoom', (event) => g.attr('transform', event.transform));
-
                 svg.call(zoom);
 
-                document.getElementById('resetZoom').onclick = () => {
-                    svg.transition().duration(750).call(zoom.transform, d3.zoomIdentity);
-                };
+                // Filter Nodes
+                let filteredNodes = data.nodes.filter(n => {
+                    if (currentFilter === 'connected') return !n.isolated;
+                    if (currentFilter === 'isolated') return n.isolated;
+                    if (currentFilter === 'files') return n.type === 'File';
+                    if (currentFilter === 'functions') return n.type === 'Function';
+                    if (currentFilter === 'high-risk') return n.risk === 'HIGH';
+                    return true;
+                }).map(n => ({ ...n })); // Shallow copy for simulation
 
-                let showLabels = true;
-                document.getElementById('toggleLabels').onclick = (e) => {
-                    showLabels = !showLabels;
-                    g.selectAll('text').style('opacity', showLabels ? 1 : 0);
-                    e.target.textContent = showLabels ? 'Hide Labels' : 'Show Labels';
-                };
+                // 🆚 Diff Logic
+                if (snapshotData) {
+                    const currentMap = new Map(filteredNodes.map(n => [n.id, n]));
+                    const snapshotNodesRaw = snapshotData.nodes;
+                    const snapshotMap = new Map(snapshotNodesRaw.map(n => [n.id, n]));
 
-                // Filter logic
-                let currentFilter = 'all';
-                const filterSelect = document.getElementById('filterType');
-                if (filterSelect) {
-                    filterSelect.onchange = (e) => {
-                        currentFilter = e.target.value;
-                        updateGraph();
-                    };
+                    // 1. Identify ADDED and MODIFIED
+                    filteredNodes.forEach(node => {
+                        const oldNode = snapshotMap.get(node.id);
+                        if (!oldNode) {
+                            node.diffStatus = 'added'; // New node 🟢
+                        } else if (oldNode.risk !== node.risk) {
+                            node.diffStatus = 'modified'; // Risk changed 🟡
+                        }
+                    });
+
+                    // 2. Identify DELETED (Ghost Nodes)
+                    // Only add ghosts if they match the filter? Yes, for consistency.
+                    // For simplicity, we check all snapshot nodes.
+                    snapshotNodesRaw.forEach(oldNode => {
+                        if (!currentMap.has(oldNode.id)) {
+                            // Apply formatting filter to ghosts too
+                            let passFilter = true;
+                            if (currentFilter === 'files' && oldNode.type !== 'File') passFilter = false;
+                            if (currentFilter === 'functions' && oldNode.type !== 'Function') passFilter = false;
+
+                            if (passFilter) {
+                                const ghost = JSON.parse(JSON.stringify(oldNode));
+                                ghost.diffStatus = 'deleted'; // Deleted node 🔴
+                                ghost.risk = 'GHOST';
+
+                                // Position ghost near its last known location? 
+                                // Without saved positions, they will float.
+                                filteredNodes.push(ghost);
+                            }
+                        }
+                    });
                 }
 
-                function updateGraph() {
-                    let filteredNodes = data.nodes.filter(n => {
-                        if (currentFilter === 'connected') return !n.isolated;
-                        if (currentFilter === 'isolated') return n.isolated;
-                        if (currentFilter === 'files') return n.type === 'File';
-                        if (currentFilter === 'functions') return n.type === 'Function';
-                        if (currentFilter === 'high-risk') return n.risk === 'HIGH';
-                        return true;
-                    }).map(n => ({ ...n }));
+                const nodeIds = new Set(filteredNodes.map(n => n.id));
+                let filteredLinks = data.links.filter(l => {
+                    const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
+                    const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+                    return nodeIds.has(sourceId) && nodeIds.has(targetId);
+                }).map(l => ({ ...l }));
 
-                    const nodeIds = new Set(filteredNodes.map(n => n.id));
-                    let filteredLinks = data.links.filter(l => {
-                        const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
-                        const targetId = typeof l.target === 'object' ? l.target.id : l.target;
-                        return nodeIds.has(sourceId) && nodeIds.has(targetId);
-                    }).map(l => ({ ...l }));
+                // Force Simulation
+                const simulation = d3.forceSimulation(filteredNodes)
+                    .force('link', d3.forceLink(filteredLinks).id(d => d.id).distance(80))
+                    .force('charge', d3.forceManyBody().strength(-400).distanceMax(500))
+                    .force('center', d3.forceCenter(width / 2, height / 2))
+                    .force('collision', d3.forceCollide().radius(30))
+                    .velocityDecay(0.4)
+                    .alphaDecay(0.02);
 
-                    const simulation = d3.forceSimulation(filteredNodes)
-                        .force('link', d3.forceLink(filteredLinks).id(d => d.id).distance(80)) // Tight connected nodes
-                        .force('charge', d3.forceManyBody().strength(-400).distanceMax(500)) // Local repulsion only, brings groups closer
-                        .force('center', d3.forceCenter(width / 2, height / 2))
-                        .force('collision', d3.forceCollide().radius(30))
-                        .velocityDecay(0.4)
-                        .alphaDecay(0.02);
+                setTimeout(() => simulation.stop(), 4000);
 
-                    setTimeout(() => simulation.stop(), 3000);
+                // Render Elements
+                const link = g.append('g')
+                    .selectAll('line')
+                    .data(filteredLinks)
+                    .join('line')
+                    .attr('class', d => 'link ' + (d.type === 'IMPORTS' ? 'link-import' : ''))
+                    .attr('stroke', 'var(--vscode-editor-foreground)')
+                    .attr('stroke-opacity', 0.6)
+                    .attr('stroke-width', 1.5);
 
-                    g.selectAll('*').remove();
-
-                    const link = g.append('g')
-                        .selectAll('line')
-                        .data(filteredLinks)
-                        .join('line')
-                        .attr('class', d => 'link ' + (d.type === 'IMPORTS' ? 'link-import' : ''))
-                        .attr('stroke', 'var(--vscode-editor-foreground)')
-                        .attr('stroke-opacity', 0.6)
-                        .attr('stroke-width', 1.5);
-
-                    const node = g.append('g')
-                        .selectAll('circle')
-                        .data(filteredNodes)
-                        .join('circle')
-                        .attr('class', 'node')
-                        .attr('r', d => d.type === 'File' ? 8 : 5)
-                        .attr('fill', d => {
-                            if (d.isolated || d.risk === 'ISOLATED') return '#666666';
-                            if (d.risk === 'HIGH') return '#f48771';
-                            if (d.risk === 'MEDIUM') return '#cca700';
-                            if (d.centrality > 10) return '#4fc3f7';
-                            return '#89d185';
-                        })
-                        .attr('stroke', '#fff')
-                        .attr('stroke-width', 1.5)
-                        .call(d3.drag()
-                            .on('start', (event, d) => {
-                                if (!event.active) simulation.alphaTarget(0.01).restart(); // Minimal wake-up energy
-                                d.fx = d.x;
-                                d.fy = d.y;
-                            })
-                            .on('drag', (event, d) => {
-                                d.fx = event.x;
-                                d.fy = event.y;
-                            })
-                            .on('end', (event, d) => {
-                                if (!event.active) simulation.alphaTarget(0);
-                                // d.fx = null; // Keep node fixed after drag
-                                // d.fy = null;
-                            }));
-
-                    const labels = g.append('g')
-                        .selectAll('text')
-                        .data(filteredNodes)
-                        .join('text')
-                        .text(d => d.label)
-                        .attr('font-size', 10)
-                        .attr('dx', 12)
-                        .attr('dy', 4)
-                        .attr('fill', 'var(--vscode-editor-foreground)')
-                        .style('opacity', showLabels ? 1 : 0);
-
-                    node.on('click', (event, d) => {
-                        event.stopPropagation();
-                        // Open file on click
-                        if (d.filePath) vscode.postMessage({ command: 'openFile', file: d.filePath });
+                const node = g.append('g')
+                    .selectAll('circle')
+                    .data(filteredNodes)
+                    .join('circle')
+                    .attr('class', 'node')
+                    .attr('r', d => {
+                        if (d.diffStatus === 'deleted') return 4;
+                        return d.type === 'File' ? 8 : 5;
                     })
-                        .on('mouseover', (event, d) => {
-                            showNodeContext(d, filteredNodes, filteredLinks, event);
-                            highlightConnections(d, filteredNodes, filteredLinks, node, link);
+                    .attr('fill', d => {
+                        if (d.diffStatus === 'deleted') return 'transparent'; // Ghost
+                        if (d.isolated || d.risk === 'ISOLATED') return '#666666';
+                        if (d.risk === 'HIGH') return '#f48771';
+                        if (d.risk === 'MEDIUM') return '#cca700';
+                        if (d.centrality > 10) return '#4fc3f7';
+                        return '#89d185';
+                    })
+                    .attr('stroke', d => {
+                        // 🆚 Diff Colors
+                        if (d.diffStatus === 'added') return '#00ff00';
+                        if (d.diffStatus === 'deleted') return '#ff0000';
+                        if (d.diffStatus === 'modified') return '#ffd700';
+                        return '#fff';
+                    })
+                    .attr('stroke-width', d => d.diffStatus ? 2.5 : 1.5)
+                    .attr('stroke-dasharray', d => d.diffStatus === 'deleted' ? '3,2' : 'none')
+                    .call(d3.drag()
+                        .on('start', (event, d) => {
+                            if (!event.active) simulation.alphaTarget(0.01).restart();
+                            d.fx = d.x;
+                            d.fy = d.y;
                         })
-                        .on('mousemove', (event) => {
-                            // Update position if mouse moves while hovering
-                            updateContextPosition(event);
+                        .on('drag', (event, d) => {
+                            d.fx = event.x;
+                            d.fy = event.y;
                         })
-                        .on('mouseout', () => {
-                            // Clear context and highlight on mouseout
+                        .on('end', (event, d) => {
+                            if (!event.active) simulation.alphaTarget(0);
+                            d.fx = null;
+                            d.fy = null;
+                        }));
+
+                const labels = g.append('g')
+                    .selectAll('text')
+                    .data(filteredNodes)
+                    .join('text')
+                    .attr('class', 'node-label') // For toggling
+                    .text(d => d.label)
+                    .attr('font-size', 10)
+                    .attr('dx', 12)
+                    .attr('dy', 4)
+                    .attr('fill', 'var(--vscode-editor-foreground)')
+                    .style('opacity', showLabels ? 1 : 0);
+
+                // Interactions
+                node.on('click', (event, d) => {
+                    event.stopPropagation();
+                    if (d.filePath) vscode.postMessage({ command: 'openFile', file: d.filePath });
+                })
+                    .on('mouseover', (event, d) => {
+                        showNodeContext(d, filteredNodes, filteredLinks, event);
+                        highlightConnections(d, filteredNodes, filteredLinks, node, link);
+                    })
+                    // ... mousemove/mouseout handled by global or attached here ...
+                    .on('mousemove', updateContextPosition)
+                    .on('mouseout', () => {
+                        window.hideContextTimeout = setTimeout(() => {
                             d3.selectAll('.node').classed('highlighted', false).classed('dimmed', false);
                             d3.selectAll('.link').classed('highlighted', false).classed('dimmed', false);
                             document.getElementById('graph-context').style.display = 'none';
-                        });
-
-                    simulation.on('tick', () => {
-                        link
-                            .attr('x1', d => d.source.x)
-                            .attr('y1', d => d.source.y)
-                            .attr('x2', d => d.target.x)
-                            .attr('y2', d => d.target.y);
-                        node
-                            .attr('cx', d => d.x)
-                            .attr('cy', d => d.y);
-                        labels
-                            .attr('x', d => d.x)
-                            .attr('y', d => d.y);
+                        }, 300);
                     });
-                }
-                updateGraph();
+
+                // Tick
+                simulation.on('tick', () => {
+                    link
+                        .attr('x1', d => d.source.x)
+                        .attr('y1', d => d.source.y)
+                        .attr('x2', d => d.target.x)
+                        .attr('y2', d => d.target.y);
+                    node
+                        .attr('cx', d => d.x)
+                        .attr('cy', d => d.y);
+                    labels
+                        .attr('x', d => d.x)
+                        .attr('y', d => d.y);
+                });
             }
 
             function showNodeContext(selectedNode, allNodes, allLinks, event) {
@@ -708,23 +847,63 @@
 
                 title.textContent = selectedNode.label;
 
-                // ... content generation ...
+                // Calculate Centrality (Degree)
                 const callers = allLinks.filter(l => (l.target.id || l.target) === selectedNode.id && l.type === 'CALLS');
                 const callees = allLinks.filter(l => (l.source.id || l.source) === selectedNode.id && l.type === 'CALLS');
+                const importers = allLinks.filter(l => (l.target.id || l.target) === selectedNode.id && l.type === 'IMPORTS');
+                const totalDegree = callers.length + callees.length + importers.length;
 
                 let html = `<p><strong>Type:</strong> ${selectedNode.type}</p>`;
+
+                // Status / Risk
                 if (selectedNode.isolated) {
                     html += `<p><strong>Status:</strong> <span style="color: #666666;">⚠️ ISOLATED</span></p>`;
+                    html += `<p class="reasoning"><em>Why?</em> No other files import or call this code. It may be dead code.</p>`;
                 } else {
-                    html += `<p><strong>Risk:</strong> ${selectedNode.risk}</p>`;
+                    let color = selectedNode.risk === 'HIGH' ? '#ff4d4d' : (selectedNode.risk === 'MEDIUM' ? '#ff9900' : '#4caf50');
+                    html += `<p><strong>Risk:</strong> <span style="color: ${color}; font-weight:bold">${selectedNode.risk}</span></p>`;
+
+                    // 🧠 Explainability: Risk Reasoning
+                    if (selectedNode.riskMessage) {
+                        html += `<div class="reasoning-box risk-box">
+                            <strong>⚠️ Issue Detected:</strong>
+                            <p>${escapeHtml(selectedNode.riskMessage)}</p>
+                            <small>This triggered the ${selectedNode.risk} risk flag.</small>
+                        </div>`;
+                    }
                 }
 
+                // 🧠 Explainability: Centrality Analysis
+                if (totalDegree > 5) {
+                    html += `<div class="reasoning-box centrality-box">
+                        <strong>🔵 High Centrality</strong>
+                        <p>This is a core module. It is referenced by <b>${callers.length + importers.length}</b> other files.</p>
+                        <small>Changing this has a large blast radius.</small>
+                    </div>`;
+                }
+
+                // 🧪 Proof Mode Toggle
+                html += `<div style="margin-top: 10px; border-top: 1px solid #444; padding-top: 5px;">
+                    <label style="font-size: 0.8em; cursor: pointer; display: flex; align-items: center; gap: 5px;">
+                        <input type="checkbox" id="proof-mode-toggle" onchange="toggleProofMode(this)"> 
+                        🧪 Show Evidence (Proof Mode)
+                    </label>
+                    <div id="proof-data" style="display: none; font-family: monospace; font-size: 0.8em; margin-top: 5px; color: #aaa;">
+                        <div>ID: ${selectedNode.id}</div>
+                        <div>Entropy: ${selectedNode.centrality || 0}</div>
+                        <div>Raw Risk: ${selectedNode.riskType || 'N/A'}</div>
+                        <div>Message: ${selectedNode.riskMessage || 'None'}</div>
+                    </div>
+                </div>`;
+
+                // Callers / Callees Lists
                 if (callers.length > 0) {
                     html += `<h4>Callers (${callers.length}):</h4><ul>`;
-                    callers.slice(0, 5).forEach(l => { // Limit to 5 for compactness
+                    callers.slice(0, 5).forEach(l => {
                         const caller = allNodes.find(n => n.id === (l.source.id || l.source));
                         if (caller) html += `<li>${caller.label}</li>`;
                     });
+                    if (callers.length > 5) html += `<li>...and ${callers.length - 5} more</li>`;
                     html += `</ul>`;
                 }
 
@@ -734,6 +913,7 @@
                         const callee = allNodes.find(n => n.id === (l.target.id || l.target));
                         if (callee) html += `<li>${callee.label}</li>`;
                     });
+                    if (callees.length > 5) html += `<li>...and ${callees.length - 5} more</li>`;
                     html += `</ul>`;
                 }
 
@@ -750,8 +930,9 @@
                 const bounds = container.getBoundingClientRect();
                 const panelBounds = panel.getBoundingClientRect(); // Might need approx size if hidden
 
-                const offsetX = 15;
-                const offsetY = 15;
+                // Increase offset to prevent cursor overlap triggering mouseout (flicker)
+                const offsetX = 20;
+                const offsetY = 20;
 
                 // Calculate position relative to container
                 let left = event.clientX - bounds.left + offsetX;
@@ -775,6 +956,31 @@
                 panel.style.top = top + 'px';
             }
 
+            // Expose to window for inline HTML handler
+            window.toggleProofMode = function (checkbox) {
+                const dataDiv = document.getElementById('proof-data');
+                if (dataDiv) {
+                    dataDiv.style.display = checkbox.checked ? 'block' : 'none';
+                }
+            };
+
+            // Keep panel open if hovering over it
+            const contextPanel = document.getElementById('graph-context');
+            if (contextPanel) {
+                contextPanel.addEventListener('mouseenter', () => {
+                    if (window.hideContextTimeout) {
+                        clearTimeout(window.hideContextTimeout);
+                        window.hideContextTimeout = null;
+                    }
+                });
+
+                contextPanel.addEventListener('mouseleave', () => {
+                    // Hide immediately when leaving the panel itself
+                    d3.selectAll('.node').classed('highlighted', false).classed('dimmed', false);
+                    d3.selectAll('.link').classed('highlighted', false).classed('dimmed', false);
+                    contextPanel.style.display = 'none';
+                });
+            }
             function highlightConnections(selectedNode, allNodes, allLinks, nodeSelection, linkSelection) {
                 const connectedIds = new Set([selectedNode.id]);
                 const connectedLinkIds = new Set();

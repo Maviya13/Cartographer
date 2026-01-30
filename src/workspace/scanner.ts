@@ -7,22 +7,30 @@ export interface FileNode {
     children?: FileNode[];
 }
 
-const EXCLUDE_PATTERNS = [
-    'node_modules',
-    '.git',
-    '.next',
-    'venv',
-    'dist',
-    'out',
-    '.vscode',
-    '.idea',
-    '__pycache__',
-    '.pytest_cache',
-    'build',
-    '.build'
-];
-
 export class WorkspaceScanner {
+    private excludePatterns: string[] = [
+        'node_modules',
+        '.git',
+        '.next',
+        'venv',
+        'dist',
+        'out',
+        '.vscode',
+        '.idea',
+        '__pycache__',
+        '.pytest_cache',
+        'build',
+        '.build'
+    ];
+
+    constructor(customExcludes: string[] = []) {
+        if (customExcludes.length > 0) {
+            this.excludePatterns = [...this.excludePatterns, ...customExcludes];
+            // Remove duplicates
+            this.excludePatterns = [...new Set(this.excludePatterns)];
+        }
+    }
+
     async scan(rootPath: string): Promise<FileNode> {
         return this.scanDirectory(rootPath, rootPath);
     }
@@ -30,17 +38,17 @@ export class WorkspaceScanner {
     private async scanDirectory(fullPath: string, rootPath: string): Promise<FileNode> {
         const relativePath = path.relative(rootPath, fullPath);
         const stat = await fs.stat(fullPath);
-        
+
         if (stat.isDirectory()) {
             const children: FileNode[] = [];
             const entries = await fs.readdir(fullPath);
-            
+
             for (const entry of entries) {
                 // Skip excluded patterns
-                if (EXCLUDE_PATTERNS.some(pattern => entry.includes(pattern))) {
+                if (this.excludePatterns.some(pattern => entry.includes(pattern))) {
                     continue;
                 }
-                
+
                 const entryPath = path.join(fullPath, entry);
                 try {
                     const child = await this.scanDirectory(entryPath, rootPath);
@@ -50,7 +58,7 @@ export class WorkspaceScanner {
                     console.warn(`Skipping ${entryPath}:`, error);
                 }
             }
-            
+
             return {
                 path: relativePath || '.',
                 type: 'folder',
@@ -66,7 +74,7 @@ export class WorkspaceScanner {
 
     async getAllFiles(rootPath: string, node: FileNode): Promise<string[]> {
         const files: string[] = [];
-        
+
         if (node.type === 'file') {
             files.push(path.join(rootPath, node.path));
         } else if (node.children) {
@@ -74,7 +82,7 @@ export class WorkspaceScanner {
                 files.push(...await this.getAllFiles(rootPath, child));
             }
         }
-        
+
         return files;
     }
 }

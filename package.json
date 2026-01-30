@@ -32,6 +32,21 @@
           "type": "boolean",
           "default": false,
           "description": "Enable LLM explanations (requires Gemini API key)"
+        },
+        "projectCartographer.excludePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "node_modules",
+            ".git",
+            "dist",
+            "out",
+            ".vscode",
+            ".idea"
+          ],
+          "description": "Folders or files to exclude from analysis (Kill Scope)"
         }
       }
     }

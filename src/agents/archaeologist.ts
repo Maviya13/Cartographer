@@ -26,18 +26,21 @@ const ENTRY_POINT_PATTERNS = [
 
 export class ArchaeologistAgent extends Agent {
 
-    constructor(knowledgeBase: KnowledgeBase) {
+    private excludePatterns: string[] = [];
+
+    constructor(knowledgeBase: KnowledgeBase, excludePatterns: string[] = []) {
         super({
             name: 'archaeologist',
             priority: 1 // Runs first to map the terrain
         }, knowledgeBase);
+        this.excludePatterns = excludePatterns;
     }
 
     async explore(workspacePath: string): Promise<void> {
         this.log('Starting exploration...');
 
         // Scan the workspace
-        const scanner = new WorkspaceScanner();
+        const scanner = new WorkspaceScanner(this.excludePatterns);
         // Note: In a real scenario, we might want to get the fileTree from somewhere else or scan it here.
         // For now, let's assume we scan from scratch or the scanner handles it.
         // But wait, the original analyze method took `fileTree`. 
