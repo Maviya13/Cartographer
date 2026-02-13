@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import * as vscode from 'vscode';
 
 export interface ExtractedFunction {
@@ -15,6 +15,7 @@ export interface ExtractedFunction {
 
 export class PythonExtractor {
     private pythonScriptPath: string;
+    private pythonCommand: string | null = null;
     
     constructor() {
         // Path to the Python AST helper script
@@ -96,8 +97,14 @@ export class PythonExtractor {
                 reject(new Error(`Python script not found at: ${this.pythonScriptPath}`));
                 return;
             }
+
+            const pythonCommand = this.resolvePythonCommand();
+            if (!pythonCommand) {
+                reject(new Error('Python interpreter not found. Tried python3, python, and py.'));
+                return;
+            }
             
-            const python = spawn('python3', [this.pythonScriptPath]);
+            const python = spawn(pythonCommand, [this.pythonScriptPath]);
             let stdout = '';
             let stderr = '';
             
@@ -110,7 +117,7 @@ export class PythonExtractor {
             });
             
             python.on('error', (error) => {
-                reject(new Error(`Failed to spawn Python process: ${error.message}. Make sure python3 is installed.`));
+                reject(new Error(`Failed to spawn Python process using '${pythonCommand}': ${error.message}.`));
             });
             
             python.on('close', (code) => {
@@ -140,5 +147,27 @@ export class PythonExtractor {
                 reject(new Error(`Failed to write to Python script: ${error}`));
             }
         });
+    }
+
+    private resolvePythonCommand(): string | null {
+        if (this.pythonCommand) {
+            return this.pythonCommand;
+        }
+
+        const candidates = ['python3', 'python', 'py'];
+        for (const candidate of candidates) {
+            const result = spawnSync(candidate, ['--version'], {
+                stdio: 'pipe',
+                timeout: 3000,
+                windowsHide: true
+            });
+
+            if (!result.error && result.status === 0) {
+                this.pythonCommand = candidate;
+                return candidate;
+            }
+        }
+
+        return null;
     }
 }

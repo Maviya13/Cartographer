@@ -2,6 +2,8 @@
 
 A production-grade VS Code extension that uses agentic, graph-based static analysis to understand codebases and answer architectural questions.
 
+- GitHub: https://github.com/Maviya13/Cartographer
+
 ## Features
 
 - **Workspace Scanning**: Recursively scans workspace folders (excluding node_modules, .git, etc.)
@@ -42,8 +44,10 @@ To enable Gemini AI explanations:
 ## Usage
 
 1. Open a workspace in VS Code
-2. The extension will automatically scan and build the knowledge graph
-3. Use the "Project Cartographer" view to ask questions about your codebase
+2. The extension pre-builds the graph in the background after startup
+3. Click the status bar item (`Project Cartographer`) to open the dashboard
+4. If workspace files/folders or exclude settings change, the graph is marked stale and rebuilt on next open
+5. Use Command Palette: `Refresh Project Cartographer Graph` for a manual rebuild
 
 ## Architecture
 
@@ -66,8 +70,57 @@ npm run compile
 npm run watch  # For development
 ```
 
+## Build Artifacts
+
+- TypeScript compiles into `out/`
+- `npm run compile` also copies:
+  - `src/extractors/python_ast_helper.py` -> `out/extractors/python_ast_helper.py`
+  - `src/ui/*.html` -> `out/ui/`
+
+## Deploy (Local VSIX)
+
+1. Install packaging tool:
+  ```bash
+  npm install -g @vscode/vsce
+  ```
+2. Build extension output:
+  ```bash
+  npm run compile
+  ```
+3. Package VSIX:
+  ```bash
+  vsce package
+  ```
+4. Install in VS Code:
+  - Command Palette -> `Extensions: Install from VSIX...`
+  - Select the generated `.vsix` file
+
+## Publish (VS Code Marketplace)
+
+1. Update `package.json` metadata:
+  - set `publisher` (required)
+  - bump `version`
+  - ensure `displayName`, `description`, and categories are accurate
+2. Create a Personal Access Token (PAT) from Azure DevOps marketplace publisher settings.
+3. Login and publish:
+  ```bash
+  vsce login <your-publisher>
+  npm run compile
+  vsce publish
+  ```
+
+Optional publish with explicit version bump:
+
+```bash
+vsce publish patch
+```
+
 ## Requirements
 
 - Node.js 18+
 - Python 3.x (for Python AST parsing)
 - VS Code 1.80+
+
+## License
+
+MIT — see `LICENSE`.

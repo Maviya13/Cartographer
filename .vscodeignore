@@ -1,6 +1,11 @@
 .vscode/**
 .vscode-test/**
 src/**
+node_modules/**
+scripts/**
+bun.lock
+GEMINI_CONTEXT.md
+.env.example
 .gitignore
 tsconfig.json
 *.map

@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { WorkspaceScanner } from './workspace/scanner';
 import { ArchaeologistAgent, WorkspaceMetadata } from './agents/archaeologist';
 import { DetectiveAgent, Dependency } from './agents/detective';
 import { RiskAssessorAgent, RiskFinding } from './agents/risk-assessor';
@@ -22,53 +21,165 @@ import { createWebviewPanel } from './ui/webview';
 let graph: KnowledgeGraph | null = null;
 let orchestrator: QueryOrchestrator | null = null;
 let agentData: any = null;
+let geminiClient: GeminiClient | null = null;
+let statusBarItem: vscode.StatusBarItem | null = null;
+let buildPromise: Promise<void> | null = null;
+let currentWorkspacePath: string | null = null;
 
 export async function activate(context: vscode.ExtensionContext) {
     console.log('Project Cartographer is now active!');
 
-    graph = new KnowledgeGraph();
-    const geminiClient = new GeminiClient(context);
+    geminiClient = new GeminiClient(context);
 
-    const disposable = vscode.commands.registerCommand('projectCartographer.openView', async () => {
-        if (!graph) {
-            vscode.window.showErrorMessage('Graph not initialized yet. Please wait for the graph to finish building.');
+    const openViewCommand = vscode.commands.registerCommand('projectCartographer.openView', async () => {
+        const ready = await ensureGraphReady(context, false);
+        if (!ready || !graph || !orchestrator) {
             return;
         }
-        if (!orchestrator) {
-            vscode.window.showWarningMessage('Orchestrator not ready yet. Graph is still building...');
-            return;
-        }
+
         const panel = createWebviewPanel(context.extensionUri, graph, orchestrator, agentData);
         context.subscriptions.push(panel);
     });
 
-    // 4. Status Bar Item (Launcher)
-    const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    const refreshCommand = vscode.commands.registerCommand('projectCartographer.refreshGraph', async () => {
+        const ready = await ensureGraphReady(context, true);
+        if (ready) {
+            vscode.window.showInformationMessage('Project Cartographer graph refreshed.');
+        }
+    });
+
+    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     statusBarItem.text = "$(map) Project Cartographer";
     statusBarItem.command = 'projectCartographer.openView';
     statusBarItem.tooltip = "Open Project Cartographer Dashboard";
     statusBarItem.show();
     context.subscriptions.push(statusBarItem);
 
-    context.subscriptions.push(disposable);
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeWorkspaceFolders(() => {
+            invalidateGraphState('Workspace changed');
+        })
+    );
 
-    vscode.window.withProgress({
-        location: vscode.ProgressLocation.Notification,
-        title: "Building codebase graph...",
-        cancellable: false
-    }, async (progress) => {
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration((event) => {
+            if (event.affectsConfiguration('projectCartographer.excludePatterns')) {
+                invalidateGraphState('Exclude patterns updated');
+            }
+        })
+    );
+
+    updateStatusBar('idle');
+
+    setTimeout(() => {
+        ensureGraphReady(context, false).catch((error) => {
+            console.error('Background graph prebuild failed:', error);
+        });
+    }, 1500);
+
+    context.subscriptions.push(openViewCommand, refreshCommand);
+}
+
+function getPrimaryWorkspacePath(): string | null {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    return workspaceFolder?.uri.fsPath || null;
+}
+
+function invalidateGraphState(reason: string): void {
+    graph = null;
+    orchestrator = null;
+    agentData = null;
+    currentWorkspacePath = null;
+    updateStatusBar('stale', reason);
+}
+
+function updateStatusBar(state: 'idle' | 'building' | 'ready' | 'stale' | 'error', details?: string): void {
+    if (!statusBarItem) {
+        return;
+    }
+
+    if (state === 'building') {
+        statusBarItem.text = '$(sync~spin) Cartographer: Building graph';
+        statusBarItem.tooltip = details || 'Analyzing workspace files';
+        return;
+    }
+
+    if (state === 'ready' && graph) {
+        statusBarItem.text = `$(map) Cartographer: ${graph.getNodeCount()}n/${graph.getEdgeCount()}e`;
+        statusBarItem.tooltip = details || 'Graph ready. Click to open dashboard.';
+        return;
+    }
+
+    if (state === 'stale') {
+        statusBarItem.text = '$(warning) Cartographer: Rebuild needed';
+        statusBarItem.tooltip = details || 'Workspace changed. Click to rebuild and open dashboard.';
+        return;
+    }
+
+    if (state === 'error') {
+        statusBarItem.text = '$(error) Cartographer: Build failed';
+        statusBarItem.tooltip = details || 'Click to retry graph build.';
+        return;
+    }
+
+    statusBarItem.text = '$(map) Project Cartographer';
+    statusBarItem.tooltip = details || 'Open Project Cartographer Dashboard';
+}
+
+async function ensureGraphReady(context: vscode.ExtensionContext, force: boolean): Promise<boolean> {
+    const workspacePath = getPrimaryWorkspacePath();
+    if (!workspacePath) {
+        vscode.window.showWarningMessage('Open a workspace folder to use Project Cartographer.');
+        return false;
+    }
+
+    if (!force && graph && orchestrator && currentWorkspacePath === workspacePath) {
+        return true;
+    }
+
+    if (buildPromise) {
+        await buildPromise;
+        return !!graph && !!orchestrator;
+    }
+
+    buildPromise = (async () => {
         try {
-            agentData = await buildKnowledgeGraph(progress, context);
-            orchestrator = new QueryOrchestrator(graph!, geminiClient);
+            graph = new KnowledgeGraph();
+            updateStatusBar('building', 'Analyzing project...');
 
-            const panel = createWebviewPanel(context.extensionUri, graph!, orchestrator, agentData);
-            context.subscriptions.push(panel);
+            await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Window,
+                    title: 'Project Cartographer: building graph...',
+                    cancellable: false
+                },
+                async (progress) => {
+                    agentData = await buildKnowledgeGraph(progress, context);
+                }
+            );
+
+            orchestrator = new QueryOrchestrator(graph!, geminiClient || undefined);
+            currentWorkspacePath = workspacePath;
+            updateStatusBar('ready');
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
-            vscode.window.showErrorMessage(`Failed to build graph: ${errorMessage}`);
-            console.error('Graph building error:', error);
+            orchestrator = null;
+            updateStatusBar('error', errorMessage);
+            throw error;
         }
-    });
+    })();
+
+    try {
+        await buildPromise;
+        return !!graph && !!orchestrator;
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(`Failed to build graph: ${errorMessage}`);
+        console.error('Graph building error:', error);
+        return false;
+    } finally {
+        buildPromise = null;
+    }
 }
 
 async function buildKnowledgeGraph(progress: vscode.Progress<{ message?: string; increment?: number }>, context: vscode.ExtensionContext) {
@@ -165,6 +276,7 @@ async function buildKnowledgeGraph(progress: vscode.Progress<{ message?: string;
     // Ideally this should be an agent too
     const pythonExtractor = new PythonExtractor();
     const jsExtractor = new JSExtractor();
+    const pendingCallLinks: Array<{ fromFunctionId: string; callName: string }> = [];
 
     if (metadata && metadata.files) {
         for (const file of metadata.files) {
@@ -185,21 +297,11 @@ async function buildKnowledgeGraph(progress: vscode.Progress<{ message?: string;
                             to: func.id,
                             type: 'DEFINES'
                         });
-                        // Note: func.calls are function names, not function IDs
-                        // We'll try to match them to actual function nodes
                         for (const call of func.calls) {
-                            // Try to find a function with this name
-                            const calledFunctions = graph!.getNodesByType('Function').filter(
-                                f => f.data.name === call || f.id.includes(`::${call}`)
-                            );
-                            if (calledFunctions.length > 0) {
-                                // Link to the first match
-                                graph!.addEdge({
-                                    from: func.id,
-                                    to: calledFunctions[0].id,
-                                    type: 'CALLS'
-                                });
-                            }
+                            pendingCallLinks.push({
+                                fromFunctionId: func.id,
+                                callName: call
+                            });
                         }
                     }
                 } else if (file.match(/\.(js|ts|jsx|tsx)$/)) {
@@ -218,23 +320,50 @@ async function buildKnowledgeGraph(progress: vscode.Progress<{ message?: string;
                             to: func.id,
                             type: 'DEFINES'
                         });
-                        // Try to match call names to actual function nodes
                         for (const call of func.calls) {
-                            const calledFunctions = graph!.getNodesByType('Function').filter(
-                                f => f.data.name === call || f.id.includes(`::${call}`)
-                            );
-                            if (calledFunctions.length > 0) {
-                                graph!.addEdge({
-                                    from: func.id,
-                                    to: calledFunctions[0].id,
-                                    type: 'CALLS'
-                                });
-                            }
+                            pendingCallLinks.push({
+                                fromFunctionId: func.id,
+                                callName: call
+                            });
                         }
                     }
                 }
             } catch (error) {
                 console.warn(`Failed to extract from ${file}:`, error);
+            }
+        }
+
+        const allFunctionNodes = graph!.getNodesByType('Function');
+        const functionLookup = new Map<string, typeof allFunctionNodes>();
+
+        for (const functionNode of allFunctionNodes) {
+            const functionName = String(functionNode.data?.name || '').toLowerCase();
+            if (!functionName) {
+                continue;
+            }
+
+            if (!functionLookup.has(functionName)) {
+                functionLookup.set(functionName, []);
+            }
+            functionLookup.get(functionName)!.push(functionNode);
+        }
+
+        for (const pending of pendingCallLinks) {
+            const calledCandidates = functionLookup.get(String(pending.callName || '').toLowerCase()) || [];
+            if (calledCandidates.length === 0) {
+                continue;
+            }
+
+            const fromNode = graph!.getNode(pending.fromFunctionId);
+            const fromFile = fromNode?.data?.file;
+            const preferredTarget = calledCandidates.find(candidate => candidate.data?.file === fromFile) || calledCandidates[0];
+
+            if (preferredTarget && preferredTarget.id !== pending.fromFunctionId) {
+                graph!.addEdge({
+                    from: pending.fromFunctionId,
+                    to: preferredTarget.id,
+                    type: 'CALLS'
+                });
             }
         }
     }
@@ -249,4 +378,12 @@ async function buildKnowledgeGraph(progress: vscode.Progress<{ message?: string;
 export function deactivate() {
     graph = null;
     orchestrator = null;
+    agentData = null;
+    geminiClient = null;
+    buildPromise = null;
+    currentWorkspacePath = null;
+    if (statusBarItem) {
+        statusBarItem.dispose();
+        statusBarItem = null;
+    }
 }

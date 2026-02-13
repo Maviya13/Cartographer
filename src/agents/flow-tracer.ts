@@ -31,15 +31,13 @@ export class FlowTracerAgent extends Agent {
             return;
         }
 
-        // Get archaeologist data for graph structure
-        const archaeologistData = this.knowledgeBase.get('archaeologist');
-        if (!archaeologistData) {
-            this.log('No archaeologist data found');
+        // Build adjacency map from dependency graph
+        const adjacencyMap = this.buildAdjacencyMap();
+
+        if (adjacencyMap.size === 0) {
+            this.log('No dependency edges found, skipping flow tracing');
             return;
         }
-
-        // Build adjacency map from calls/imports
-        const adjacencyMap = this.buildAdjacencyMap(archaeologistData);
 
         // Trace flows from each entrypoint
         this.flowPaths.clear();
@@ -56,34 +54,25 @@ export class FlowTracerAgent extends Agent {
         this.log(`Traced ${flowData.length} flow paths`);
     }
 
-    private buildAdjacencyMap(archaeologistData: any): Map<string, string[]> {
+    private buildAdjacencyMap(): Map<string, string[]> {
         const adjacencyMap = new Map<string, string[]>();
+        const dependencies = this.knowledgeBase.get('detective') || [];
 
-        // Build map from calls and imports
-        if (archaeologistData.calls) {
-            archaeologistData.calls.forEach((call: any) => {
-                const from = call.from || call.caller;
-                const to = call.to || call.callee;
-                if (from && to) {
-                    if (!adjacencyMap.has(from)) {
-                        adjacencyMap.set(from, []);
-                    }
-                    adjacencyMap.get(from)!.push(to);
-                }
-            });
-        }
+        for (const dependency of dependencies) {
+            const from = dependency?.from;
+            const to = dependency?.to;
+            if (!from || !to) {
+                continue;
+            }
 
-        if (archaeologistData.imports) {
-            archaeologistData.imports.forEach((imp: any) => {
-                const from = imp.from || imp.importer;
-                const to = imp.to || imp.imported;
-                if (from && to) {
-                    if (!adjacencyMap.has(from)) {
-                        adjacencyMap.set(from, []);
-                    }
-                    adjacencyMap.get(from)!.push(to);
-                }
-            });
+            if (!adjacencyMap.has(from)) {
+                adjacencyMap.set(from, []);
+            }
+
+            const targets = adjacencyMap.get(from)!;
+            if (!targets.includes(to)) {
+                targets.push(to);
+            }
         }
 
         return adjacencyMap;
