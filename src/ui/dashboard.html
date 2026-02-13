@@ -500,6 +500,7 @@
             <div class="graph-controls">
                 <button id="resetZoom">Reset Zoom</button>
                 <button id="saveSnapshot">📸 Save Snapshot</button>
+                <button id="exportMarkdown">📄 Export Docs</button>
                 <button id="toggleLabels">Hide Labels</button>
                 <button id="clearSelection">Clear Selection</button>
                 <button id="toggleTimeline">📅 Timeline</button>
@@ -510,6 +511,9 @@
                     <option value="files">Files Only</option>
                     <option value="functions">Functions Only</option>
                     <option value="high-risk">High Risk Only</option>
+                </select>
+                <select id="filterDomain">
+                    <option value="all">All Domains</option>
                 </select>
                 <div style="width: 1px; height: 20px; background: #555; margin: 0 5px;"></div>
                 <select id="snapshotSelect" style="max-width: 150px;">
@@ -819,6 +823,10 @@
                 vscode.postMessage({ command: 'saveSnapshot' });
             };
 
+            document.getElementById('exportMarkdown').onclick = () => {
+                vscode.postMessage({ command: 'exportMarkdown' });
+            };
+
             const userSnapshotSelect = document.getElementById('snapshotSelect');
             if (userSnapshotSelect) {
                 userSnapshotSelect.onchange = (e) => {
@@ -833,14 +841,17 @@
                 };
             }
 
+            // Filter Controls
             let currentFilter = 'all';
-            const filterSelect = document.getElementById('filterType');
-            if (filterSelect) {
-                filterSelect.onchange = (e) => {
-                    currentFilter = e.target.value;
-                    renderGraph();
-                };
-            }
+            let currentDomainFilter = 'all';
+            document.getElementById('filterType').onchange = (e) => {
+                currentFilter = e.target.value;
+                renderGraph();
+            };
+            document.getElementById('filterDomain').onchange = (e) => {
+                currentDomainFilter = e.target.value;
+                renderGraph();
+            };
 
             // Main Render Function
             function renderGraph(dataOverride, snapshotDataOverride) {
@@ -874,7 +885,27 @@
                     if (currentFilter === 'functions') return n.type === 'Function';
                     if (currentFilter === 'high-risk') return n.risk === 'HIGH';
                     return true;
+                }).filter(n => {
+                    // Domain filter
+                    if (currentDomainFilter && currentDomainFilter !== 'all') {
+                        return n.domain === currentDomainFilter;
+                    }
+                    return true;
                 }).map(n => ({ ...n })); // Shallow copy for simulation
+
+                // Populate domain filter dropdown (only once)
+                if (data.domainColors && !window.domainFilterPopulated) {
+                    const domainSelect = document.getElementById('filterDomain');
+                    const domains = new Set(data.nodes.map(n => n.domain).filter(d => d));
+                    domains.forEach(domain => {
+                        const option = document.createElement('option');
+                        option.value = domain;
+                        option.textContent = domain.charAt(0).toUpperCase() + domain.slice(1);
+                        domainSelect.appendChild(option);
+                    });
+                    window.domainFilterPopulated = true;
+                    window.domainColors = data.domainColors;
+                }
 
                 // 🆚 Diff Logic
                 if (snapshotData) {
@@ -955,20 +986,43 @@
                     .attr('fill', d => {
                         if (d.diffStatus === 'deleted') return 'transparent'; // Ghost
                         if (d.isolated || d.risk === 'ISOLATED') return '#666666';
+
+                        // Use domain color if available (prioritize domain over risk)
+                        if (d.domain && window.domainColors && window.domainColors[d.domain]) {
+                            return window.domainColors[d.domain];
+                        }
+
+                        // Fallback to risk-based colors
                         if (d.risk === 'HIGH') return '#f48771';
                         if (d.risk === 'MEDIUM') return '#cca700';
                         if (d.centrality > 10) return '#4fc3f7';
                         return '#89d185';
+                    })
+                    .attr('fill-opacity', d => {
+                        // Use opacity to indicate risk level when using domain colors
+                        if (d.domain && window.domainColors && window.domainColors[d.domain]) {
+                            if (d.risk === 'HIGH') return 0.7; // Dimmer for high risk
+                            if (d.risk === 'MEDIUM') return 0.85; // Slightly dim for medium risk
+                            return 1.0; // Full opacity for low risk
+                        }
+                        return 1.0;
                     })
                     .attr('stroke', d => {
                         // 🆚 Diff Colors
                         if (d.diffStatus === 'added') return '#00ff00';
                         if (d.diffStatus === 'deleted') return '#ff0000';
                         if (d.diffStatus === 'modified') return '#ffd700';
+                        // Entrypoint stroke
+                        if (d.isEntrypoint) return '#FFD700'; // Gold for entrypoints
                         return '#fff';
                     })
-                    .attr('stroke-width', d => d.diffStatus ? 2.5 : 1.5)
+                    .attr('stroke-width', d => {
+                        if (d.diffStatus) return 2.5;
+                        if (d.isEntrypoint) return 3; // Thicker stroke for entrypoints
+                        return 1.5;
+                    })
                     .attr('stroke-dasharray', d => d.diffStatus === 'deleted' ? '3,2' : 'none')
+                    .style('cursor', 'pointer') // Added cursor style
                     .call(d3.drag()
                         .on('start', (event, d) => {
                             if (!event.active) simulation.alphaTarget(0.01).restart();
@@ -985,6 +1039,18 @@
                             d.fy = null;
                         }));
 
+                // Add star icon for entrypoints
+                const entrypointStars = g.append('g') // Append to 'g' not 'svg'
+                    .selectAll('text')
+                    .data(filteredNodes.filter(d => d.isEntrypoint))
+                    .join('text')
+                    .attr('class', 'entrypoint-star')
+                    .attr('text-anchor', 'middle')
+                    .attr('dominant-baseline', 'middle')
+                    .attr('font-size', '12px')
+                    .attr('pointer-events', 'none')
+                    .text('⭐');
+
                 const labels = g.append('g')
                     .selectAll('text')
                     .data(filteredNodes)
@@ -1000,6 +1066,37 @@
                 // Interactions
                 node.on('click', (event, d) => {
                     event.stopPropagation();
+
+                    // Highlight flow path if available
+                    if (d.flowPath && d.flowPath.length > 0) {
+                        // Reset all nodes
+                        node.attr('stroke-width', n => {
+                            if (n.diffStatus) return 2.5;
+                            if (n.isEntrypoint) return 3;
+                            return 1.5;
+                        });
+
+                        // Highlight nodes in flow path
+                        node.attr('stroke-width', n => {
+                            if (d.flowPath.includes(n.id)) return 4; // Thick border for path
+                            if (n.diffStatus) return 2.5;
+                            if (n.isEntrypoint) return 3;
+                            return 1.5;
+                        });
+
+                        // Highlight links in flow path
+                        link.attr('stroke-width', l => {
+                            const sourceId = l.source.id || l.source;
+                            const targetId = l.target.id || l.target;
+                            const sourceIdx = d.flowPath.indexOf(sourceId);
+                            const targetIdx = d.flowPath.indexOf(targetId);
+                            if (sourceIdx >= 0 && targetIdx >= 0 && Math.abs(sourceIdx - targetIdx) === 1) {
+                                return 3; // Thick line for path
+                            }
+                            return 1.5;
+                        });
+                    }
+
                     if (d.filePath) vscode.postMessage({ command: 'openFile', file: d.filePath });
                 })
                     .on('mouseover', (event, d) => {
@@ -1026,6 +1123,9 @@
                     node
                         .attr('cx', d => d.x)
                         .attr('cy', d => d.y);
+                    entrypointStars
+                        .attr('x', d => d.x)
+                        .attr('y', d => d.y - 15); // Position star above node
                     labels
                         .attr('x', d => d.x)
                         .attr('y', d => d.y);
@@ -1047,6 +1147,26 @@
                 const totalDegree = callers.length + callees.length + importers.length;
 
                 let html = `<p><strong>Type:</strong> ${selectedNode.type}</p>`;
+
+                // Entrypoint badge
+                if (selectedNode.isEntrypoint) {
+                    html += `<p><strong>⭐ Entrypoint:</strong> <span style="color: #FFD700;">${selectedNode.entrypointPattern || 'Detected'}</span></p>`;
+                }
+
+                // Domain badge
+                if (selectedNode.domain) {
+                    const domainColor = window.domainColors && window.domainColors[selectedNode.domain] ? window.domainColors[selectedNode.domain] : '#999';
+                    html += `<p><strong>🏷️ Domain:</strong> <span style="color: ${domainColor};">${selectedNode.domain}</span></p>`;
+                }
+
+                // Flow depth badge
+                if (selectedNode.flowDepth !== null && selectedNode.flowDepth !== undefined) {
+                    const depthColor = selectedNode.isOnCriticalPath ? '#ff9800' : '#4caf50';
+                    html += `<p><strong>🔀 Flow Depth:</strong> <span style="color: ${depthColor};">${selectedNode.flowDepth} hops from entry</span></p>`;
+                    if (selectedNode.isOnCriticalPath) {
+                        html += `<p style="color: #ff9800; font-size: 0.9em;">⚡ On critical path</p>`;
+                    }
+                }
 
                 // Status / Risk
                 if (selectedNode.isolated) {

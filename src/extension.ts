@@ -6,6 +6,9 @@ import { RiskAssessorAgent, RiskFinding } from './agents/risk-assessor';
 import { HistorianAgent, FileHistory } from './agents/historian';
 import { TranslatorAgent, FileDocumentation } from './agents/translator';
 import { ArchitectAgent, ArchitectureInsight } from './agents/architect';
+import { EntrypointDetectorAgent } from './agents/entrypoint-detector';
+import { DomainDetectorAgent } from './agents/domain-detector';
+import { FlowTracerAgent } from './agents/flow-tracer';
 import { AgentCoordinator } from './agents/base/coordinator';
 import { KnowledgeBase } from './knowledge/knowledge-base';
 import { PythonExtractor } from './extractors/pythonExtractor';
@@ -91,6 +94,9 @@ async function buildKnowledgeGraph(progress: vscode.Progress<{ message?: string;
     coordinator.registerAgent(new HistorianAgent(knowledgeBase));
     coordinator.registerAgent(new TranslatorAgent(knowledgeBase, context));
     coordinator.registerAgent(new ArchitectAgent(knowledgeBase));
+    coordinator.registerAgent(new EntrypointDetectorAgent(knowledgeBase));
+    coordinator.registerAgent(new DomainDetectorAgent(knowledgeBase));
+    coordinator.registerAgent(new FlowTracerAgent(knowledgeBase));
 
     progress.report({ message: 'Agents exploring...', increment: 10 });
 

@@ -46,12 +46,45 @@ export function createWebviewPanel(
             }
         });
 
+        // Get entrypoint data
+        const entrypointData = data?.['entrypoint-detector'] || [];
+        const entrypointMap = new Map();
+        entrypointData.forEach((e: any) => {
+            if (e.filePath) {
+                entrypointMap.set(e.filePath, { pattern: e.pattern, confidence: e.confidence });
+            }
+        });
+
+        // Get domain data
+        const domainData = data?.['domain-detector'];
+        const domainMap = new Map();
+        const domainColors = domainData?.colors || {};
+        if (domainData?.mappings) {
+            domainData.mappings.forEach((d: any) => {
+                if (d.filePath) {
+                    domainMap.set(d.filePath, { domain: d.domain, reason: d.reason, confidence: d.confidence });
+                }
+            });
+        }
+
+        // Get flow tracer data
+        const flowData = data?.['flow-tracer'] || [];
+        const flowMap = new Map();
+        flowData.forEach((f: any) => {
+            if (f.nodeId) {
+                flowMap.set(f.nodeId, { depth: f.depth, path: f.path, isOnCriticalPath: f.isOnCriticalPath });
+            }
+        });
+
         // Add file nodes
         const fileNodes = graph.getNodesByType('File');
         for (const node of fileNodes) {
             const filePath = node.data.path || node.id;
             const riskInfo = riskMap.get(filePath);
             const fileRisk = riskInfo ? riskInfo.severity : 'LOW';
+            const entrypointInfo = entrypointMap.get(filePath);
+            const domainInfo = domainMap.get(filePath);
+            const flowInfo = flowMap.get(filePath);
 
             nodes.push({
                 id: node.id,
@@ -62,7 +95,14 @@ export function createWebviewPanel(
                 riskType: riskInfo ? riskInfo.type : null,
                 centrality: 0,
                 filePath: filePath,
-                isolated: false
+                isolated: false,
+                isEntrypoint: !!entrypointInfo,
+                entrypointPattern: entrypointInfo ? entrypointInfo.pattern : null,
+                domain: domainInfo ? domainInfo.domain : 'core',
+                domainReason: domainInfo ? domainInfo.reason : null,
+                flowDepth: flowInfo ? flowInfo.depth : null,
+                flowPath: flowInfo ? flowInfo.path : null,
+                isOnCriticalPath: flowInfo ? flowInfo.isOnCriticalPath : false
             });
         }
 
@@ -111,7 +151,7 @@ export function createWebviewPanel(
             }
         });
 
-        return { nodes, links };
+        return { nodes, links, domainColors };
     };
 
     // Handle messages from webview
@@ -283,6 +323,46 @@ export function createWebviewPanel(
                         });
                     }
                     break;
+
+                case 'exportMarkdown':
+                    try {
+                        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+                        if (!workspaceFolder) {
+                            throw new Error('No workspace folder found');
+                        }
+
+                        // Get current graph data
+                        const graphData = getGraphPayload();
+
+                        // Import the markdown exporter
+                        const { MarkdownExporterAgent } = require('../agents/markdown-exporter');
+                        const exporter = new MarkdownExporterAgent(null as any); // We'll pass data directly
+
+                        // Generate markdown content
+                        const markdown = exporter.generateMarkdownFromData(
+                            graphData,
+                            path.basename(workspaceFolder.uri.fsPath)
+                        );
+
+                        // Write to file
+                        const outputPath = path.join(workspaceFolder.uri.fsPath, 'architecture.md');
+                        fs.writeFileSync(outputPath, markdown, 'utf-8');
+
+                        vscode.window.showInformationMessage(
+                            `Architecture report exported to ${path.basename(outputPath)}`,
+                            'Open File'
+                        ).then(selection => {
+                            if (selection === 'Open File') {
+                                vscode.workspace.openTextDocument(outputPath).then(doc => {
+                                    vscode.window.showTextDocument(doc);
+                                });
+                            }
+                        });
+                    } catch (error) {
+                        vscode.window.showErrorMessage(`Failed to export markdown: ${String(error)}`);
+                    }
+                    break;
+
                 case 'listSnapshots':
                     try {
                         if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
