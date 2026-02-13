@@ -88,7 +88,7 @@ export class DomainDetectorAgent extends Agent {
     }
 
     private detectDomain(filePath: string): DomainMapping | null {
-        const normalizedPath = filePath.toLowerCase();
+        const normalizedPath = filePath.toLowerCase().replace(/\\/g, '/');
         const fileName = path.basename(normalizedPath);
         const dirName = path.dirname(normalizedPath);
 
@@ -101,9 +101,10 @@ export class DomainDetectorAgent extends Agent {
         }
 
         // 1. Check directory structure (high confidence)
+        const segments = dirName.split('/').filter(Boolean);
         for (const [domain, keywords] of Object.entries(this.domainKeywords)) {
             for (const keyword of keywords) {
-                if (dirName.includes(`/${keyword}/`) || dirName.includes(`/${keyword}s/`)) {
+                if (segments.includes(keyword) || segments.includes(`${keyword}s`)) {
                     return {
                         filePath,
                         domain,

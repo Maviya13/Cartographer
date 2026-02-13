@@ -1,7 +1,30 @@
 {
   "name": "project-cartographer",
+  "publisher": "syndicate-project",
   "displayName": "Project Cartographer",
   "description": "Agentic, graph-based static analysis for codebase understanding",
+  "icon": "assets/icon.png",
+  "keywords": [
+    "architecture",
+    "codebase",
+    "dependency-graph",
+    "static-analysis",
+    "visualization",
+    "developer-tools"
+  ],
+  "galleryBanner": {
+    "color": "#1f2937",
+    "theme": "dark"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Maviya13/Cartographer.git"
+  },
+  "homepage": "https://github.com/Maviya13/Cartographer",
+  "bugs": {
+    "url": "https://github.com/Maviya13/Cartographer/issues"
+  },
   "version": "0.1.0",
   "engines": {
     "vscode": "^1.80.0"
@@ -18,6 +41,10 @@
       {
         "command": "projectCartographer.openView",
         "title": "Open Project Cartographer"
+      },
+      {
+        "command": "projectCartographer.refreshGraph",
+        "title": "Refresh Project Cartographer Graph"
       }
     ],
     "configuration": {
@@ -52,13 +79,15 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./ && npm run copy-python && npm run copy-assets",
-    "copy-python": "cp src/extractors/python_ast_helper.py out/extractors/python_ast_helper.py || true",
-    "copy-assets": "cp src/ui/*.html out/ui/ || true",
+    "vscode:prepublish": "npm run build:release",
+    "compile": "tsc -p ./ && node ./scripts/postcompile.mjs",
+    "build:release": "tsc -p ./ --noEmit && node ./scripts/bundle.mjs && node ./scripts/postcompile.mjs",
+    "copy-python": "node ./scripts/postcompile.mjs",
+    "copy-assets": "node ./scripts/postcompile.mjs",
     "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
+    "esbuild": "^0.25.0",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.80.0",
     "typescript": "^5.0.0"

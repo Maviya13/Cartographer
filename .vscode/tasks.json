@@ -23,10 +23,9 @@
         {
             "label": "Copy Python Script",
             "type": "shell",
-            "command": "cp",
+            "command": "node",
             "args": [
-                "src/extractors/python_ast_helper.py",
-                "out/extractors/python_ast_helper.py"
+                "scripts/postcompile.mjs"
             ],
             "dependsOn": "npm: compile",
             "problemMatcher": []

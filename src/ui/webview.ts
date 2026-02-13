@@ -334,12 +334,8 @@ export function createWebviewPanel(
                         // Get current graph data
                         const graphData = getGraphPayload();
 
-                        // Import the markdown exporter
-                        const { MarkdownExporterAgent } = require('../agents/markdown-exporter');
-                        const exporter = new MarkdownExporterAgent(null as any); // We'll pass data directly
-
                         // Generate markdown content
-                        const markdown = exporter.generateMarkdownFromData(
+                        const markdown = generateArchitectureMarkdown(
                             graphData,
                             path.basename(workspaceFolder.uri.fsPath)
                         );
@@ -511,6 +507,65 @@ export function createWebviewPanel(
     }
 
     return panel;
+}
+
+function generateArchitectureMarkdown(graphData: any, projectName: string): string {
+    const nodes = graphData?.nodes || [];
+    const links = graphData?.links || [];
+
+    const fileNodes = nodes.filter((node: any) => node.type === 'File');
+    const functionNodes = nodes.filter((node: any) => node.type === 'Function');
+    const riskCounts = {
+        high: nodes.filter((node: any) => node.risk === 'HIGH').length,
+        medium: nodes.filter((node: any) => node.risk === 'MEDIUM').length,
+        low: nodes.filter((node: any) => node.risk === 'LOW').length,
+        isolated: nodes.filter((node: any) => node.risk === 'ISOLATED').length
+    };
+
+    const topConnected = [...nodes]
+        .sort((a: any, b: any) => (b.centrality || 0) - (a.centrality || 0))
+        .slice(0, 10);
+
+    const domainMap = new Map<string, number>();
+    for (const node of fileNodes) {
+        const domain = node.domain || 'core';
+        domainMap.set(domain, (domainMap.get(domain) || 0) + 1);
+    }
+
+    const domainSummary = Array.from(domainMap.entries())
+        .sort((a, b) => b[1] - a[1])
+        .map(([domain, count]) => `- ${domain}: ${count}`)
+        .join('\n');
+
+    const topConnectedSummary = topConnected
+        .map((node: any) => `- ${node.label} (${node.type}, centrality: ${node.centrality || 0})`)
+        .join('\n');
+
+    return `# ${projectName} - Architecture Report
+
+Generated on ${new Date().toLocaleString()}
+
+## Overview
+
+- Files analyzed: ${fileNodes.length}
+- Functions analyzed: ${functionNodes.length}
+- Relationship edges: ${links.length}
+
+## Risk Summary
+
+- HIGH: ${riskCounts.high}
+- MEDIUM: ${riskCounts.medium}
+- LOW: ${riskCounts.low}
+- ISOLATED: ${riskCounts.isolated}
+
+## Domain Breakdown
+
+${domainSummary || '- No domain mapping available'}
+
+## Most Connected Nodes
+
+${topConnectedSummary || '- No connected nodes found'}
+`;
 }
 
 function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri): string {

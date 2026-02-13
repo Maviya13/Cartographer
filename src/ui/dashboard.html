@@ -504,6 +504,7 @@
                 <button id="toggleLabels">Hide Labels</button>
                 <button id="clearSelection">Clear Selection</button>
                 <button id="toggleTimeline">📅 Timeline</button>
+                <span id="graphStats" style="font-size: 0.85em; opacity: 0.8; margin-right: 8px;">Nodes: 0 | Edges: 0</span>
                 <select id="filterType">
                     <option value="all">All Nodes</option>
                     <option value="connected">Connected Only</option>
@@ -654,6 +655,7 @@
                     case 'error':
                         setLoading(false);
                         showError(message.error);
+                        break;
                     case 'snapshotList':
                         const select = document.getElementById('snapshotSelect');
                         // Keep "Live View"
@@ -692,8 +694,6 @@
                         window.currentGraphData = message.data;
                         // If we have a snapshot loaded, re-render with diff
                         renderGraph(message.data, window.snapshotData);
-                        break;
-
                         break;
                 }
             });
@@ -807,9 +807,13 @@
             };
 
             // Global Event Listeners for Graph Controls
+            let graphZoomBehavior = null;
             document.getElementById('resetZoom').onclick = () => {
+                if (!graphZoomBehavior) {
+                    return;
+                }
                 const svg = d3.select('#graph-svg');
-                svg.transition().duration(750).call(d3.zoom().transform, d3.zoomIdentity);
+                svg.transition().duration(750).call(graphZoomBehavior.transform, d3.zoomIdentity);
             };
 
             let showLabels = true;
@@ -872,10 +876,10 @@
                 const g = svg.append('g');
 
                 // Zoom Support
-                const zoom = d3.zoom()
+                graphZoomBehavior = d3.zoom()
                     .scaleExtent([0.1, 4])
                     .on('zoom', (event) => g.attr('transform', event.transform));
-                svg.call(zoom);
+                svg.call(graphZoomBehavior);
 
                 // Filter Nodes
                 let filteredNodes = data.nodes.filter(n => {
@@ -883,7 +887,7 @@
                     if (currentFilter === 'isolated') return n.isolated;
                     if (currentFilter === 'files') return n.type === 'File';
                     if (currentFilter === 'functions') return n.type === 'Function';
-                    if (currentFilter === 'high-risk') return n.risk === 'HIGH';
+                    if (currentFilter === 'high-risk') return String(n.risk || '').toUpperCase() === 'HIGH';
                     return true;
                 }).filter(n => {
                     // Domain filter
@@ -893,17 +897,23 @@
                     return true;
                 }).map(n => ({ ...n })); // Shallow copy for simulation
 
-                // Populate domain filter dropdown (only once)
-                if (data.domainColors && !window.domainFilterPopulated) {
+                // Populate domain filter dropdown
+                if (data.domainColors) {
                     const domainSelect = document.getElementById('filterDomain');
-                    const domains = new Set(data.nodes.map(n => n.domain).filter(d => d));
+                    const existingSelection = domainSelect.value || 'all';
+                    const domains = Array.from(new Set(data.nodes.map(n => n.domain).filter(d => d))).sort();
+
+                    domainSelect.innerHTML = '<option value="all">All Domains</option>';
                     domains.forEach(domain => {
                         const option = document.createElement('option');
                         option.value = domain;
                         option.textContent = domain.charAt(0).toUpperCase() + domain.slice(1);
                         domainSelect.appendChild(option);
                     });
-                    window.domainFilterPopulated = true;
+
+                    if ([...domainSelect.options].some(o => o.value === existingSelection)) {
+                        domainSelect.value = existingSelection;
+                    }
                     window.domainColors = data.domainColors;
                 }
 
@@ -952,6 +962,11 @@
                     const targetId = typeof l.target === 'object' ? l.target.id : l.target;
                     return nodeIds.has(sourceId) && nodeIds.has(targetId);
                 }).map(l => ({ ...l }));
+
+                const graphStats = document.getElementById('graphStats');
+                if (graphStats) {
+                    graphStats.textContent = `Nodes: ${filteredNodes.length} | Edges: ${filteredLinks.length}`;
+                }
 
                 // Force Simulation
                 const simulation = d3.forceSimulation(filteredNodes)
@@ -1097,8 +1112,13 @@
                         });
                     }
 
-                    if (d.filePath) vscode.postMessage({ command: 'openFile', file: d.filePath });
                 })
+                    .on('dblclick', (event, d) => {
+                        event.stopPropagation();
+                        if (d.filePath) {
+                            vscode.postMessage({ command: 'openFile', file: d.filePath });
+                        }
+                    })
                     .on('mouseover', (event, d) => {
                         showNodeContext(d, filteredNodes, filteredLinks, event);
                         highlightConnections(d, filteredNodes, filteredLinks, node, link);
@@ -1327,10 +1347,6 @@
                 document.getElementById('graph-context').style.display = 'none';
             });
 
-            window.addEventListener('message', event => {
-                if (event.data.command === 'graphData') renderGraph(event.data.data);
-            });
-
             // Helpers
             function log(msg) {
                 console.log(msg);
@@ -1365,7 +1381,7 @@
 
                 try {
                     const risks = data['risk-assessor'] || [];
-                    const history = data['historian'] || [];
+                    const history = [...(data['historian'] || [])];
                     const insights = data['architect'] || [];
 
                     // 1. Calculate Health Score (Smart Scoring)
@@ -1535,6 +1551,7 @@
             function renderRiskChart(high, med, low) {
                 const container = document.getElementById('risk-chart');
                 if (!container) return;
+                container.innerHTML = '';
                 const width = container.clientWidth;
                 const height = container.clientHeight;
                 const radius = Math.min(width, height) / 2 - 10;
@@ -1578,6 +1595,7 @@
             function renderHotspotChart(history) {
                 const container = document.getElementById('hotspot-chart');
                 if (!container) return;
+                container.innerHTML = '';
 
                 // Sort by commits and take top 5
                 const data = history.sort((a, b) => b.commits - a.commits).slice(0, 5);
